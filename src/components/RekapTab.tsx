@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
-import { Calendar, Download, Printer, Search, Trash2, Filter, AlertCircle, FileText, Check, ChevronDown } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Download, Printer, Search, Filter, AlertCircle, FileText } from 'lucide-react';
 import { Kelas, Santri, MataPelajaran, Hissoh, Absensi, Semester, TahunAjaran } from '../types';
-import { motion } from 'motion/react';
 
 interface RekapTabProps {
   kelas: Kelas[];
@@ -20,34 +19,38 @@ interface RekapTabProps {
   onShowToast: (text: string, type: 'success' | 'error' | 'info') => void;
 }
 
+interface RekapRow {
+  id: string;
+  no: number;
+  nama: string;
+  kelas: string;
+  hadir: number;
+  izin: number;
+  sakit: number;
+  ghoib: number;
+  totalPertemuan: number;
+  persentase: number;
+}
+
 export default function RekapTab({
   kelas,
   santri,
-  mapel,
-  hissoh,
   absensi,
-  semesters,
-  tahunAjarans,
-  onDeleteSession,
   onShowToast,
 }: RekapTabProps) {
-  // Filters state
   const [filterKelas, setFilterKelas] = useState<string>('all');
-  const [filterMapel, setFilterMapel] = useState<string>('all');
-  const [filterHari, setFilterHari] = useState<string>('all');
-  const [filterTanggal, setFilterTanggal] = useState<string>('');
   const [filterBulan, setFilterBulan] = useState<string>('all');
+  const [filterTahun, setFilterTahun] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Confirmation state for deleting a whole session
-  const [sessionToDelete, setSessionToDelete] = useState<{
-    tanggal: string;
-    kelasId: string;
-    mapelId: string;
-    hissohId: string;
-  } | null>(null);
+  const parseDate = (value: string) => {
+    if (!value) return null;
+    const [year, month, day] = value.split('-').map(Number);
+    if (!year || !month || !day) return null;
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
 
-  // Months name array
   const months = [
     { value: '1', label: 'Januari' },
     { value: '2', label: 'Februari' },
@@ -63,188 +66,156 @@ export default function RekapTab({
     { value: '12', label: 'Desember' },
   ];
 
-  // Group absensi by session (unique combination of tanggal, kelas, mapel, hissoh)
-  const groupedSessions = useMemo(() => {
-    const map: { [key: string]: {
-      id: string;
-      tanggal: string;
-      hari: string;
-      kelas_id: string;
-      mapel_id: string;
-      hissoh_id: string;
-      records: Absensi[];
-    }} = {};
+  const availableYears = useMemo(() => {
+    const years = Array.from(
+      new Set(
+        absensi
+          .map(item => parseDate(item.tanggal))
+          .filter((date): date is Date => Boolean(date))
+          .map(date => date.getUTCFullYear().toString())
+      )
+    );
+    return years.sort((a, b) => Number(b) - Number(a));
+  }, [absensi, parseDate]);
 
-    absensi.forEach(item => {
-      const key = `${item.tanggal}_${item.kelas_id}_${item.mapel_id}_${item.hissoh_id}`;
-      if (!map[key]) {
-        map[key] = {
-          id: key,
-          tanggal: item.tanggal,
-          hari: item.hari,
-          kelas_id: item.kelas_id,
-          mapel_id: item.mapel_id,
-          hissoh_id: item.hissoh_id,
-          records: [],
-        };
-      }
-      map[key].records.push(item);
-    });
-
-    return Object.values(map).sort((a, b) => b.tanggal.localeCompare(a.tanggal));
-  }, [absensi]);
-
-  // Filtered Sessions based on selections
-  const filteredSessions = useMemo(() => {
-    return groupedSessions.filter(sess => {
-      // 1. Kelas Filter
-      if (filterKelas !== 'all' && sess.kelas_id !== filterKelas) return false;
-
-      // 2. Mapel Filter
-      if (filterMapel !== 'all' && sess.mapel_id !== filterMapel) return false;
-
-      // 3. Hari Filter
-      if (filterHari !== 'all' && sess.hari.toLowerCase() !== filterHari.toLowerCase()) return false;
-
-      // 4. Tanggal Filter
-      if (filterTanggal && sess.tanggal !== filterTanggal) return false;
-
-      // 5. Bulan Filter
-      if (filterBulan !== 'all') {
-        const sessMonth = new Date(sess.tanggal).getMonth() + 1; // 1-indexed
-        if (sessMonth.toString() !== filterBulan) return false;
-      }
-
-      // 6. Search Query (Siswa name inside session)
+  const rows = useMemo<RekapRow[]>(() => {
+    const filteredStudents = santri.filter(student => {
+      if (student.status === 'Keluar') return false;
+      if (filterKelas !== 'all' && student.kelas_id !== filterKelas) return false;
       if (searchQuery.trim() !== '') {
         const query = searchQuery.toLowerCase();
-        // Check if any student name matches query
-        const hasMatchingStudent = sess.records.some(r => {
-          const sName = santri.find(s => s.id === r.santri_id)?.nama || '';
-          return sName.toLowerCase().includes(query);
-        });
-        if (!hasMatchingStudent) return false;
+        return student.nama.toLowerCase().includes(query);
       }
-
       return true;
     });
-  }, [groupedSessions, filterKelas, filterMapel, filterHari, filterTanggal, filterBulan, searchQuery, santri]);
 
-  // Overall Statistics for current filtered view
-  const overallStats = useMemo(() => {
-    let total = 0;
-    let hadir = 0;
-    let izin = 0;
-    let sakit = 0;
-    let ghoib = 0;
+    const visibleStudentIds = new Set(filteredStudents.map(student => student.id));
+    const summaryMap = new Map<string, { hadir: number; izin: number; sakit: number; ghoib: number; totalPertemuan: number }>();
 
-    filteredSessions.forEach(sess => {
-      sess.records.forEach(r => {
-        total++;
-        if (r.status === 'Hadir') hadir++;
-        else if (r.status === 'Izin') izin++;
-        else if (r.status === 'Sakit') sakit++;
-        else if (r.status === 'Ghoib') ghoib++;
-      });
+    absensi.forEach(item => {
+      if (!visibleStudentIds.has(item.santri_id)) return;
+
+      const date = parseDate(item.tanggal);
+      if (!date) return;
+      if (filterBulan !== 'all' && date.getUTCMonth() + 1 !== Number(filterBulan)) return;
+      if (filterTahun !== 'all' && date.getUTCFullYear().toString() !== filterTahun) return;
+
+      const current = summaryMap.get(item.santri_id) || { hadir: 0, izin: 0, sakit: 0, ghoib: 0, totalPertemuan: 0 };
+      current.totalPertemuan += 1;
+      if (item.status === 'Hadir') current.hadir += 1;
+      else if (item.status === 'Izin') current.izin += 1;
+      else if (item.status === 'Sakit') current.sakit += 1;
+      else if (item.status === 'Ghoib') current.ghoib += 1;
+      summaryMap.set(item.santri_id, current);
     });
 
-    const percent = (val: number) => (total > 0 ? Math.round((val / total) * 100) : 0);
+    return filteredStudents
+      .map(student => {
+        const summary = summaryMap.get(student.id) || { hadir: 0, izin: 0, sakit: 0, ghoib: 0, totalPertemuan: 0 };
+        const totalPertemuan = summary.totalPertemuan;
+        const persentase = totalPertemuan > 0 ? Math.round((summary.hadir / totalPertemuan) * 100) : 0;
+
+        return {
+          id: student.id,
+          no: student.no,
+          nama: student.nama,
+          kelas: kelas.find(item => item.id === student.kelas_id)?.nama || '-',
+          hadir: summary.hadir,
+          izin: summary.izin,
+          sakit: summary.sakit,
+          ghoib: summary.ghoib,
+          totalPertemuan,
+          persentase,
+        };
+      })
+      .sort((a, b) => a.no - b.no);
+  }, [absensi, filterBulan, filterKelas, filterTahun, kelas, santri, searchQuery, parseDate]);
+
+  const overallStats = useMemo(() => {
+    const totalSantri = rows.length;
+    const totalHadir = rows.reduce((sum, item) => sum + item.hadir, 0);
+    const totalIzin = rows.reduce((sum, item) => sum + item.izin, 0);
+    const totalSakit = rows.reduce((sum, item) => sum + item.sakit, 0);
+    const totalGhoib = rows.reduce((sum, item) => sum + item.ghoib, 0);
+    const rataRataKehadiran = totalSantri > 0
+      ? Math.round(rows.reduce((sum, item) => sum + item.persentase, 0) / totalSantri)
+      : 0;
 
     return {
-      total,
-      hadir,
-      izin,
-      sakit,
-      ghoib,
-      hadirPercent: percent(hadir),
-      izinPercent: percent(izin),
-      sakitPercent: percent(sakit),
-      ghoibPercent: percent(ghoib),
+      totalSantri,
+      totalHadir,
+      totalIzin,
+      totalSakit,
+      totalGhoib,
+      rataRataKehadiran,
     };
-  }, [filteredSessions]);
+  }, [rows]);
 
-  // Handle Export to EXCEL (CSV)
+  const topFive = useMemo(() => {
+    return [...rows].sort((a, b) => b.persentase - a.persentase).slice(0, 5);
+  }, [rows]);
+
+  const bottomFive = useMemo(() => {
+    return [...rows].sort((a, b) => a.persentase - b.persentase).slice(0, 5);
+  }, [rows]);
+
+  const getBadgeClass = (value: number) => {
+    if (value >= 90) return 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20';
+    if (value >= 75) return 'bg-amber-500/10 text-amber-700 border-amber-500/20';
+    return 'bg-rose-500/10 text-rose-700 border-rose-500/20';
+  };
+
   const handleExportCSV = () => {
-    if (filteredSessions.length === 0) {
+    if (rows.length === 0) {
       onShowToast('Tidak ada data untuk diekspor', 'error');
       return;
     }
 
     try {
-      // Build CSV header
-      let csvContent = 'No,Tanggal,Hari,Kelas,Mata Pelajaran,Hissoh,Nama Santri,No Absen,Status Absensi,Waktu Input\r\n';
-      
-      let counter = 1;
-      filteredSessions.forEach(sess => {
-        const sKelas = kelas.find(k => k.id === sess.kelas_id)?.nama || '';
-        const sMapel = mapel.find(m => m.id === sess.mapel_id)?.nama || '';
-        const sHissoh = hissoh.find(h => h.id === sess.hissoh_id)?.nomor || '';
+      const header = 'Nama,Kelas,Hadir,Izin,Sakit,Ghoib,Total,Persentase\r\n';
+      const body = rows.map((row, index) => {
+        const total = row.hadir + row.izin + row.sakit + row.ghoib;
+        return `"${index + 1}","${row.nama}","${row.kelas}","${row.hadir}","${row.izin}","${row.sakit}","${row.ghoib}","${total}","${row.persentase}%"\r\n`;
+      }).join('');
 
-        sess.records.forEach(r => {
-          const sStudent = santri.find(s => s.id === r.santri_id);
-          const sName = sStudent?.nama || '';
-          const sNoAbsen = sStudent?.no || '';
-          const status = r.status === 'Ghoib' ? 'Alfa' : r.status;
-          
-          csvContent += `"${counter}","${sess.tanggal}","${sess.hari}","${sKelas}","${sMapel}","Hissoh ${sHissoh}","${sName}","${sNoAbsen}","${status}","${r.jam_absen}"\r\n`;
-          counter++;
-        });
-      });
-
-      // Download file
+      const csvContent = header + body;
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', `rekap_absensi_fiqih_${Date.now()}.csv`);
+      link.setAttribute('download', `rekap_absensi_santri_${Date.now()}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(url);
 
-      onShowToast('File Excel/CSV berhasil didownload', 'success');
-    } catch (e) {
+      onShowToast('File Excel berhasil didownload', 'success');
+    } catch {
       onShowToast('Gagal mengekspor data', 'error');
     }
   };
 
-  // Print Report Handler
   const handlePrint = () => {
     window.print();
   };
 
-  const handleConfirmDelete = () => {
-    if (sessionToDelete) {
-      onDeleteSession(
-        sessionToDelete.tanggal,
-        sessionToDelete.kelasId,
-        sessionToDelete.mapelId,
-        sessionToDelete.hissohId
-      );
-      onShowToast('Sesi absensi berhasil dihapus', 'success');
-      setSessionToDelete(null);
-    }
-  };
-
   return (
     <div className="space-y-6">
-      {/* Print View Header (Only displays during print) */}
       <div className="hidden print:block text-center space-y-2 pb-6 border-b border-slate-300">
-        <h1 className="text-2xl font-bold font-display text-black uppercase">REKAP ABSENSI SANTRI FIQIH NEW OE</h1>
-        <p className="text-sm font-medium text-slate-700">Laporan Kehadiran Berbasis Sesi Jadwal Harian</p>
+        <h1 className="text-2xl font-bold font-display text-black uppercase">REKAP ABSENSI SANTRI</h1>
+        <p className="text-sm font-medium text-slate-700">Laporan Kehadiran Santri Berdasarkan Data Absensi</p>
         <p className="text-xs text-slate-500">Dicetak pada: {new Date().toLocaleString('id-ID')}</p>
       </div>
 
-      {/* Control Filter Bar */}
       <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-5 rounded-2xl shadow-xs print:hidden">
         <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-bold font-display text-slate-800 dark:text-white flex items-center gap-2">
               <Filter className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-              Filter Rekap Presensi
+              Rekap Absensi Santri
             </h2>
 
             <div className="flex items-center gap-2">
-              {/* Excel Download button */}
               <button
                 onClick={handleExportCSV}
                 className="px-3.5 py-2 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 font-bold text-xs rounded-xl hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-all flex items-center gap-1.5 cursor-pointer"
@@ -252,8 +223,6 @@ export default function RekapTab({
                 <Download className="w-4 h-4" />
                 Excel
               </button>
-
-              {/* PDF/Print button */}
               <button
                 onClick={handlePrint}
                 className="px-3.5 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
@@ -264,9 +233,7 @@ export default function RekapTab({
             </div>
           </div>
 
-          {/* Form filters */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-            {/* Filter Kelas */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
             <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Kelas</label>
               <select
@@ -275,54 +242,12 @@ export default function RekapTab({
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:border-emerald-500"
               >
                 <option value="all">Semua Kelas</option>
-                {kelas.map(k => (
-                  <option key={k.id} value={k.id}>{k.nama}</option>
+                {kelas.map(item => (
+                  <option key={item.id} value={item.id}>{item.nama}</option>
                 ))}
               </select>
             </div>
 
-            {/* Filter Mapel */}
-            <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Mata Pelajaran</label>
-              <select
-                value={filterMapel}
-                onChange={e => setFilterMapel(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:border-emerald-500"
-              >
-                <option value="all">Semua Mapel</option>
-                {mapel.map(m => (
-                  <option key={m.id} value={m.id}>{m.nama}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Filter Hari */}
-            <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Hari</label>
-              <select
-                value={filterHari}
-                onChange={e => setFilterHari(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:border-emerald-500"
-              >
-                <option value="all">Semua Hari</option>
-                {['Sabtu', 'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'].map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Filter Tanggal */}
-            <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Tanggal</label>
-              <input
-                type="date"
-                value={filterTanggal}
-                onChange={e => setFilterTanggal(e.target.value)}
-                className="w-full px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:border-emerald-500"
-              />
-            </div>
-
-            {/* Filter Bulan */}
             <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Bulan</label>
               <select
@@ -331,13 +256,26 @@ export default function RekapTab({
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:border-emerald-500"
               >
                 <option value="all">Semua Bulan</option>
-                {months.map(m => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
+                {months.map(item => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
                 ))}
               </select>
             </div>
 
-            {/* Fast Student Search */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Tahun</label>
+              <select
+                value={filterTahun}
+                onChange={e => setFilterTahun(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:border-emerald-500"
+              >
+                <option value="all">Semua Tahun</option>
+                {availableYears.map(item => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </div>
+
             <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Nama Santri</label>
               <div className="relative">
@@ -355,206 +293,183 @@ export default function RekapTab({
         </div>
       </div>
 
-      {/* Overview Statistics Panel */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-5 rounded-2xl shadow-xs">
-        <h3 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-4">Statistik Hasil Filter Kehadiran</h3>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl text-center">
-            <p className="text-[10px] text-slate-400 font-bold uppercase">Total Input</p>
-            <p className="text-2xl font-black font-display text-slate-800 dark:text-white mt-1">{overallStats.total}</p>
-            <p className="text-[9px] text-slate-400 mt-0.5">absensi santri</p>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-4 rounded-2xl text-center">
+          <p className="text-[10px] text-slate-400 font-bold uppercase">Total Santri</p>
+          <p className="text-2xl font-black font-display text-slate-800 dark:text-white mt-1">{overallStats.totalSantri}</p>
+        </div>
+        <div className="bg-emerald-500/10 dark:bg-emerald-500/5 p-4 rounded-2xl text-center border border-emerald-500/10">
+          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase">Total Hadir</p>
+          <p className="text-2xl font-black font-display text-emerald-600 dark:text-emerald-400 mt-1">{overallStats.totalHadir}</p>
+        </div>
+        <div className="bg-blue-500/10 dark:bg-blue-500/5 p-4 rounded-2xl text-center border border-blue-500/10">
+          <p className="text-[10px] text-blue-600 dark:text-blue-400 font-bold uppercase">Total Izin</p>
+          <p className="text-2xl font-black font-display text-blue-600 dark:text-blue-400 mt-1">{overallStats.totalIzin}</p>
+        </div>
+        <div className="bg-amber-500/10 dark:bg-amber-500/5 p-4 rounded-2xl text-center border border-amber-500/10">
+          <p className="text-[10px] text-amber-600 dark:text-amber-500 font-bold uppercase">Total Sakit</p>
+          <p className="text-2xl font-black font-display text-amber-600 dark:text-amber-500 mt-1">{overallStats.totalSakit}</p>
+        </div>
+        <div className="bg-rose-500/10 dark:bg-rose-500/5 p-4 rounded-2xl text-center border border-rose-500/10">
+          <p className="text-[10px] text-rose-600 dark:text-rose-400 font-bold uppercase">Total Ghoib</p>
+          <p className="text-2xl font-black font-display text-rose-600 dark:text-rose-400 mt-1">{overallStats.totalGhoib}</p>
+        </div>
+        <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-2xl text-center">
+          <p className="text-[10px] text-slate-400 font-bold uppercase">Rata-rata Kehadiran</p>
+          <p className="text-2xl font-black font-display text-slate-800 dark:text-white mt-1">{overallStats.rataRataKehadiran}%</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <FileText className="w-4 h-4 text-emerald-600" />
+            <h3 className="text-sm font-bold font-display text-slate-800 dark:text-white">5 Santri Kehadiran Terbaik</h3>
           </div>
-          <div className="bg-emerald-500/10 dark:bg-emerald-500/5 p-4 rounded-xl text-center border border-emerald-500/10">
-            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase">Hadir</p>
-            <p className="text-2xl font-black font-display text-emerald-600 dark:text-emerald-400 mt-1">{overallStats.hadir}</p>
-            <p className="text-xs font-bold text-emerald-600/70">{overallStats.hadirPercent}%</p>
+          <div className="space-y-2">
+            {topFive.length === 0 ? (
+              <p className="text-xs text-slate-400">Belum ada data yang cocok.</p>
+            ) : topFive.map((item, index) => (
+              <div key={item.id} className="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-slate-800/40 px-3 py-2">
+                <div>
+                  <p className="text-xs font-bold text-slate-800 dark:text-white">{index + 1}. {item.nama}</p>
+                  <p className="text-[11px] text-slate-400">{item.kelas}</p>
+                </div>
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-black border ${getBadgeClass(item.persentase)}`}>
+                  {item.persentase}%
+                </span>
+              </div>
+            ))}
           </div>
-          <div className="bg-blue-500/10 dark:bg-blue-500/5 p-4 rounded-xl text-center border border-blue-500/10">
-            <p className="text-[10px] text-blue-600 dark:text-blue-400 font-bold uppercase">Izin</p>
-            <p className="text-2xl font-black font-display text-blue-600 dark:text-blue-400 mt-1">{overallStats.izin}</p>
-            <p className="text-xs font-bold text-blue-600/70">{overallStats.izinPercent}%</p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <FileText className="w-4 h-4 text-rose-600" />
+            <h3 className="text-sm font-bold font-display text-slate-800 dark:text-white">5 Santri Kehadiran Terendah</h3>
           </div>
-          <div className="bg-amber-500/10 dark:bg-amber-500/5 p-4 rounded-xl text-center border border-amber-500/10">
-            <p className="text-[10px] text-amber-600 dark:text-amber-500 font-bold uppercase">Sakit</p>
-            <p className="text-2xl font-black font-display text-amber-600 dark:text-amber-500 mt-1">{overallStats.sakit}</p>
-            <p className="text-xs font-bold text-amber-600/70">{overallStats.sakitPercent}%</p>
-          </div>
-          <div className="bg-rose-500/10 dark:bg-rose-500/5 p-4 rounded-xl text-center border border-rose-500/10 col-span-2 md:col-span-1">
-            <p className="text-[10px] text-rose-600 dark:text-rose-400 font-bold uppercase">Alfa (Ghoib)</p>
-            <p className="text-2xl font-black font-display text-rose-600 dark:text-rose-400 mt-1">{overallStats.ghoib}</p>
-            <p className="text-xs font-bold text-rose-600/70">{overallStats.ghoibPercent}%</p>
+          <div className="space-y-2">
+            {bottomFive.length === 0 ? (
+              <p className="text-xs text-slate-400">Belum ada data yang cocok.</p>
+            ) : bottomFive.map((item, index) => (
+              <div key={item.id} className="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-slate-800/40 px-3 py-2">
+                <div>
+                  <p className="text-xs font-bold text-slate-800 dark:text-white">{index + 1}. {item.nama}</p>
+                  <p className="text-[11px] text-slate-400">{item.kelas}</p>
+                </div>
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-black border ${getBadgeClass(item.persentase)}`}>
+                  {item.persentase}%
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Reports Sessions List (Groups as cards and table) */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-bold font-display text-slate-800 dark:text-white flex items-center gap-1.5">
-          <FileText className="w-4 h-4 text-emerald-600" />
-          Daftar Rekap Sesi Absensi ({filteredSessions.length} Sesi Terbuka)
-        </h3>
+      <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/20">
+          <h3 className="text-sm font-bold font-display text-slate-800 dark:text-white">Tabel Rekap Absensi</h3>
+          <p className="text-xs text-slate-400">Data diurutkan berdasarkan nomor absen.</p>
+        </div>
 
-        {filteredSessions.length === 0 ? (
-          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-12 text-center text-slate-500">
+        {rows.length === 0 ? (
+          <div className="p-12 text-center text-slate-500">
             <AlertCircle className="w-10 h-10 text-slate-400 mx-auto mb-2" />
-            <p className="text-sm font-medium">Tidak ada rekap absensi yang cocok dengan filter.</p>
-            <p className="text-xs text-slate-400 mt-1">Lakukan input absensi terlebih dahulu pada halaman Jadwal Hari Ini.</p>
+            <p className="text-sm font-medium">Tidak ada data rekap yang cocok dengan filter saat ini.</p>
           </div>
         ) : (
-          filteredSessions.map(sess => {
-            const sKelas = kelas.find(k => k.id === sess.kelas_id);
-            const sMapel = mapel.find(m => m.id === sess.mapel_id);
-            const sHissoh = hissoh.find(h => h.id === sess.hissoh_id);
-
-            // Session states calculation
-            const hCount = sess.records.filter(r => r.status === 'Hadir').length;
-            const iCount = sess.records.filter(r => r.status === 'Izin').length;
-            const sCount = sess.records.filter(r => r.status === 'Sakit').length;
-            const gCount = sess.records.filter(r => r.status === 'Ghoib').length;
-
-            return (
-              <div
-                key={sess.id}
-                className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs hover:border-slate-200 dark:hover:border-slate-700 transition-all"
-              >
-                {/* Session Header banner */}
-                <div className="bg-slate-50/70 dark:bg-slate-800/20 px-5 py-4 border-b border-slate-100 dark:border-slate-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="space-y-0.5">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold rounded-md uppercase">
-                      Hissoh {sHissoh ? String(sHissoh.nomor).padStart(2, '0') : '-'}
-                    </span>
-                    <h4 className="text-base font-black font-display text-slate-800 dark:text-white uppercase leading-tight">
-                      {sMapel?.nama || 'Mapel'} — {sKelas?.nama || 'Kelas'}
-                    </h4>
-                    <p className="text-xs text-slate-400 font-medium">
-                      {sess.hari}, {new Date(sess.tanggal).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })} • {sHissoh ? `${sHissoh.jam_mulai} - ${sHissoh.jam_selesai} WIB (${sHissoh.jam_mulai_istiwa || sHissoh.jam_mulai} - ${sHissoh.jam_selesai_istiwa || sHissoh.jam_selesai} Istiwa')` : '-'}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Compact breakdown summary */}
-                    <div className="flex items-center gap-1 text-[10px] font-bold">
-                      <span className="px-1.5 py-0.5 bg-emerald-100 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 rounded">H: {hCount}</span>
-                      <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 rounded">I: {iCount}</span>
-                      <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-950/30 text-amber-700 dark:text-amber-500 rounded">S: {sCount}</span>
-                      <span className="px-1.5 py-0.5 bg-rose-100 dark:bg-rose-950/30 text-rose-700 dark:text-rose-400 rounded">A: {gCount}</span>
-                    </div>
-
-                    {/* Delete session button (confirm layout) */}
-                    <button
-                      onClick={() => setSessionToDelete(sess)}
-                      className="p-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/20 dark:hover:bg-rose-900/30 text-rose-600 rounded-xl transition-colors cursor-pointer print:hidden"
-                      title="Hapus Sesi Absensi"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Session Records (Detailed table) */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-slate-50/30 dark:bg-slate-900/40 border-b border-slate-50 dark:border-slate-800 text-slate-400 font-bold">
-                        <th className="py-2.5 px-4 w-12 text-center">No</th>
-                        <th className="py-2.5 px-4">Nama Santri</th>
-                        <th className="py-2.5 px-4 w-24 text-center">No. Absen</th>
-                        <th className="py-2.5 px-4 w-28 text-center">Jenis Kelamin</th>
-                        <th className="py-2.5 px-4 w-32 text-center">Status Kehadiran</th>
-                        <th className="py-2.5 px-4 w-24 text-center">Waktu Log</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/40">
-                      {sess.records
-                        .filter(r => {
-                          if (searchQuery.trim() === '') return true;
-                          const sName = santri.find(s => s.id === r.santri_id)?.nama || '';
-                          return sName.toLowerCase().includes(searchQuery.toLowerCase());
-                        })
-                        .sort((a, b) => {
-                          const sA = santri.find(s => s.id === a.santri_id);
-                          const sB = santri.find(s => s.id === b.santri_id);
-                          return (sA?.no || 0) - (sB?.no || 0);
-                        })
-                        .map((r, rIdx) => {
-                          const sItem = santri.find(s => s.id === r.santri_id);
-                          
-                          const statusClass = {
-                            Hadir: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20',
-                            Izin: 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border border-blue-500/20',
-                            Sakit: 'bg-amber-500/10 text-amber-700 dark:text-amber-500 border border-amber-500/20',
-                            Ghoib: 'bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20',
-                          }[r.status];
-
-                          return (
-                            <tr key={r.id} className="hover:bg-slate-50/40 dark:hover:bg-slate-800/10 transition-colors">
-                              <td className="py-2.5 px-4 text-center font-medium text-slate-400">{rIdx + 1}</td>
-                              <td className="py-2.5 px-4 font-bold text-slate-800 dark:text-slate-100">{sItem?.nama || 'Siswa'}</td>
-                              <td className="py-2.5 px-4 text-center font-mono font-bold text-slate-600 dark:text-slate-350">
-                                {sItem ? String(sItem.no).padStart(2, '0') : '-'}
-                              </td>
-                              <td className="py-2.5 px-4 text-center">
-                                <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${sItem?.jk === 'L' ? 'bg-blue-500/15 text-blue-600' : 'bg-pink-500/15 text-pink-600'}`}>
-                                  {sItem?.jk === 'L' ? 'Laki-laki' : 'Perempuan'}
-                                </span>
-                              </td>
-                              <td className="py-2.5 px-4 text-center">
-                                <span className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${statusClass}`}>
-                                  {r.status === 'Ghoib' ? 'Alfa' : r.status}
-                                </span>
-                              </td>
-                              <td className="py-2.5 px-4 text-center font-mono text-slate-400 text-[10px]">{r.jam_absen}</td>
-                            </tr>
-                          );
-                        })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            );
-          })
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left border-collapse text-sm">
+              <thead className="bg-slate-50/80 dark:bg-slate-900/40 sticky top-0 z-10">
+                <tr className="text-slate-400 uppercase text-[10px] font-bold">
+                  <th className="py-3 px-4 text-center">No</th>
+                  <th className="py-3 px-4">Nama Santri</th>
+                  <th className="py-3 px-4">Kelas</th>
+                  <th className="py-3 px-4 text-center">Hadir</th>
+                  <th className="py-3 px-4 text-center">Izin</th>
+                  <th className="py-3 px-4 text-center">Sakit</th>
+                  <th className="py-3 px-4 text-center">Ghoib</th>
+                  <th className="py-3 px-4 text-center">Total Pertemuan</th>
+                  <th className="py-3 px-4 text-center">Persentase Kehadiran</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                {rows.map((row, index) => {
+                  const total = row.hadir + row.izin + row.sakit + row.ghoib;
+                  return (
+                    <tr key={row.id} className="hover:bg-slate-50/40 dark:hover:bg-slate-800/10 transition-colors">
+                      <td className="py-3 px-4 text-center font-semibold text-slate-400">{index + 1}</td>
+                      <td className="py-3 px-4 font-bold text-slate-800 dark:text-slate-100">{row.nama}</td>
+                      <td className="py-3 px-4 text-slate-600 dark:text-slate-300">{row.kelas}</td>
+                      <td className="py-3 px-4 text-center text-emerald-600 font-bold">{row.hadir}</td>
+                      <td className="py-3 px-4 text-center text-blue-600 font-bold">{row.izin}</td>
+                      <td className="py-3 px-4 text-center text-amber-600 font-bold">{row.sakit}</td>
+                      <td className="py-3 px-4 text-center text-rose-600 font-bold">{row.ghoib}</td>
+                      <td className="py-3 px-4 text-center font-semibold text-slate-600 dark:text-slate-300">{total}</td>
+                      <td className="py-3 px-4 text-center">
+                        <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full text-[11px] font-black border ${getBadgeClass(row.persentase)}`}>
+                          {row.persentase}%
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
-      {/* Delete Confirmation Popup Modal */}
-      {sessionToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl"
-          >
-            <div className="p-3 bg-rose-500/10 text-rose-600 rounded-2xl w-fit mb-4">
-              <Trash2 className="w-6 h-6" />
-            </div>
-
-            <h3 className="text-base font-bold font-display text-slate-800 dark:text-white">
-              Hapus Sesi Absensi?
-            </h3>
-            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              Tindakan ini akan menghapus seluruh data kehadiran santri pada sesi{' '}
-              <strong>{mapel.find(m => m.id === sessionToDelete.mapelId)?.nama}</strong> -{' '}
-              <strong>{kelas.find(k => k.id === sessionToDelete.kelasId)?.nama}</strong> tanggal{' '}
-              {sessionToDelete.tanggal}. Laporan rekapitulasi akan langsung diperbarui.
-            </p>
-
-            <div className="flex gap-2.5 mt-6">
-              <button
-                onClick={() => setSessionToDelete(null)}
-                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-              >
-                Batal
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition-colors cursor-pointer shadow-md shadow-rose-600/10"
-              >
-                Hapus Permanen
-              </button>
-            </div>
-          </motion.div>
+      <div className="hidden print:block bg-white rounded-xl p-4 border border-slate-300">
+        <h2 className="text-lg font-bold uppercase mb-3">Ringkasan Statistik</h2>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div><span className="font-semibold">Total Santri:</span> {overallStats.totalSantri}</div>
+          <div><span className="font-semibold">Total Hadir:</span> {overallStats.totalHadir}</div>
+          <div><span className="font-semibold">Total Izin:</span> {overallStats.totalIzin}</div>
+          <div><span className="font-semibold">Total Sakit:</span> {overallStats.totalSakit}</div>
+          <div><span className="font-semibold">Total Ghoib:</span> {overallStats.totalGhoib}</div>
+          <div><span className="font-semibold">Rata-rata Kehadiran:</span> {overallStats.rataRataKehadiran}%</div>
         </div>
-      )}
+      </div>
+
+      <div className="hidden print:block bg-white rounded-xl p-4 border border-slate-300">
+        <h2 className="text-lg font-bold uppercase mb-3">Tabel Rekap Lengkap</h2>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-100 text-slate-700">
+                <th className="py-2 px-2 border border-slate-300">No</th>
+                <th className="py-2 px-2 border border-slate-300">Nama</th>
+                <th className="py-2 px-2 border border-slate-300">Kelas</th>
+                <th className="py-2 px-2 border border-slate-300">Hadir</th>
+                <th className="py-2 px-2 border border-slate-300">Izin</th>
+                <th className="py-2 px-2 border border-slate-300">Sakit</th>
+                <th className="py-2 px-2 border border-slate-300">Ghoib</th>
+                <th className="py-2 px-2 border border-slate-300">Total</th>
+                <th className="py-2 px-2 border border-slate-300">Persentase</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => {
+                const total = row.hadir + row.izin + row.sakit + row.ghoib;
+                return (
+                  <tr key={row.id}>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{index + 1}</td>
+                    <td className="py-2 px-2 border border-slate-300">{row.nama}</td>
+                    <td className="py-2 px-2 border border-slate-300">{row.kelas}</td>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{row.hadir}</td>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{row.izin}</td>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{row.sakit}</td>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{row.ghoib}</td>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{total}</td>
+                    <td className="py-2 px-2 border border-slate-300 text-center">{row.persentase}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
